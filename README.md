@@ -24,6 +24,16 @@ Note: This repository manages **schema only (DDL)** --- it does NOT perform any 
 -   Simple and transparent implementation
 
 ------------------------------------------------------------------------
+## Samples
+<img width="851" height="357" alt="image" src="https://github.com/user-attachments/assets/14d794ea-dff2-4369-a95b-57d97cde17a6" />
+
+<img width="651" height="801" alt="image" src="https://github.com/user-attachments/assets/a98a9dd0-d2da-4810-a64b-6a12d69d7bc7" />
+
+<img width="1671" height="350" alt="image" src="https://github.com/user-attachments/assets/4fa57fb0-40d6-44fe-ab66-7041b7f3928f" />
+
+<img width="1671" height="262" alt="image" src="https://github.com/user-attachments/assets/aabf36fe-032f-4bf1-9783-eb5c0d3fe722" />
+
+
 
 ## Repository Structure
 
