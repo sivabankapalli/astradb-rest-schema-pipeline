@@ -1,1 +1,1 @@
-ALTER TABLE users1 ADD name text;
+ALTER TABLE users1 ADD first_name text;
