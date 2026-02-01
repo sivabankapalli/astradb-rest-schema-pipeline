@@ -1,0 +1,107 @@
+﻿name: Astra Schema via REST (curl)
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Select the schema operation to perform (create, add column, drop column, or drop table)"
+        required: true
+        default: "create"
+      table:
+        description: "Table name"
+        required: true
+        default: "users1"
+  push:
+    branches: [ "main" ]
+
+jobs:
+  schema:
+    runs-on: ubuntu-latest
+
+    env:
+      ASTRA_DB_ID: ${{ secrets.ASTRA_DB_ID }}
+      ASTRA_REGION: ${{ secrets.ASTRA_REGION }}
+      ASTRA_TOKEN: ${{ secrets.ASTRA_TOKEN }}
+      KEYSPACE: ${{ secrets.ASTRA_KEYSPACE }}
+
+    steps:
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          for v in ASTRA_DB_ID ASTRA_REGION ASTRA_TOKEN KEYSPACE; do
+            if [ -z "${!v:-}" ]; then
+              echo "Missing env var: $v (set it as a GitHub secret)"; exit 1
+            fi
+          done
+
+      - name: Run schema action
+        shell: bash
+        env:
+          ACTION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.action || 'create' }}
+          TABLE:  ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.table  || 'users' }}
+        run: |
+          set -euo pipefail
+
+          BASE_URL="https://${ASTRA_DB_ID}-${ASTRA_REGION}.apps.astra.datastax.com"
+          SCHEMA_API="${BASE_URL}/api/rest/v2/schemas"
+
+          echo "Base URL: ${BASE_URL}"
+          echo "Schema API: ${SCHEMA_API}"
+          echo "Keyspace: ${KEYSPACE}"
+          echo "Table: ${TABLE}"
+          echo "Action: ${ACTION}"
+
+          case "${ACTION}" in
+            create)
+              echo "Creating table (ifNotExists=true)..."
+              curl -sS -X POST "${SCHEMA_API}/keyspaces/${KEYSPACE}/tables" \
+                -H "X-Cassandra-Token: ${ASTRA_TOKEN}" \
+                -H "Content-Type: application/json" \
+                --data '{
+                  "name": "'"${TABLE}"'",
+                  "ifNotExists": true,
+                  "columnDefinitions": [
+                    { "name": "emailaddress", "typeDefinition": "text", "static": false },
+                    { "name": "age",         "typeDefinition": "int",  "static": false }
+                  ],
+                  "primaryKey": {
+                    "partitionKey": ["emailaddress"],
+                    "clusteringKey": ["age"]
+                  }
+                }'
+              ;;
+
+            alter_add)
+              echo "Adding column created_at..."
+              curl -sS -X POST "${SCHEMA_API}/keyspaces/${KEYSPACE}/tables/${TABLE}/columns" \
+                -H "X-Cassandra-Token: ${ASTRA_TOKEN}" \
+                -H "Content-Type: application/json" \
+                --data '{
+                  "name": "created_at",
+                  "typeDefinition": "timestamp",
+                  "static": false
+                }'
+              ;;
+
+            alter_drop)
+              echo "Dropping column created_at..."
+              curl -sS -X DELETE "${SCHEMA_API}/keyspaces/${KEYSPACE}/tables/${TABLE}/columns/created_at" \
+                -H "X-Cassandra-Token: ${ASTRA_TOKEN}"
+              ;;
+
+            drop)
+              echo "Dropping table..."
+              curl -sS -X DELETE "${SCHEMA_API}/keyspaces/${KEYSPACE}/tables/${TABLE}" \
+                -H "X-Cassandra-Token: ${ASTRA_TOKEN}"
+              ;;
+
+            *)
+              echo "Unknown action: ${ACTION}"
+              echo "Use one of: create | alter_add | alter_drop | drop"
+              exit 2
+              ;;
+          esac
+
+          echo
+          echo "Done."
