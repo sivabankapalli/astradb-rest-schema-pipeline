@@ -1,14 +1,10 @@
-﻿name: Astra Schema via REST (curl)
+﻿name: Astra Schema - Create then Alter (curl)
 
 on:
   workflow_dispatch:
     inputs:
-      action:
-        description: "Select the schema operation to perform (create, add column, drop column, or drop table)"
-        required: true
-        default: "create"
       table:
-        description: "Table name"
+        description: "Target table name"
         required: true
         default: "users1"
   push:
@@ -35,11 +31,10 @@ jobs:
             fi
           done
 
-      - name: Run schema action
+      - name: Create table + alter add + alter drop (sequence)
         shell: bash
         env:
-          ACTION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.action || 'create' }}
-          TABLE:  ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.table  || 'users' }}
+          TABLE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.table || 'users1' }}
         run: |
           set -euo pipefail
 
@@ -50,58 +45,91 @@ jobs:
           echo "Schema API: ${SCHEMA_API}"
           echo "Keyspace: ${KEYSPACE}"
           echo "Table: ${TABLE}"
-          echo "Action: ${ACTION}"
 
-          case "${ACTION}" in
-            create)
-              echo "Creating table (ifNotExists=true)..."
-              curl -sS -X POST "${SCHEMA_API}/keyspaces/${KEYSPACE}/tables" \
+          # Helper that:
+          # - prints response body
+          # - fails the step for non-2xx (but we can optionally ignore specific expected errors)
+          request () {
+            local method="$1"
+            local url="$2"
+            local content_type="${3:-}"
+            local data="${4:-}"
+
+            echo "----"
+            echo "${method} ${url}"
+
+            if [ -n "$content_type" ] && [ -n "$data" ]; then
+              curl --fail-with-body -sS -X "$method" "$url" \
                 -H "X-Cassandra-Token: ${ASTRA_TOKEN}" \
-                -H "Content-Type: application/json" \
-                --data '{
-                  "name": "'"${TABLE}"'",
-                  "ifNotExists": true,
-                  "columnDefinitions": [
-                    { "name": "emailaddress", "typeDefinition": "text", "static": false },
-                    { "name": "age",         "typeDefinition": "int",  "static": false }
-                  ],
-                  "primaryKey": {
-                    "partitionKey": ["emailaddress"],
-                    "clusteringKey": ["age"]
-                  }
-                }'
-              ;;
-
-            alter_add)
-              echo "Adding column created_at..."
-              curl -sS -X POST "${SCHEMA_API}/keyspaces/${KEYSPACE}/tables/${TABLE}/columns" \
+                -H "Content-Type: ${content_type}" \
+                --data "$data" \
+                -w "\nHTTP_STATUS=%{http_code}\n"
+            elif [ -n "$content_type" ]; then
+              curl --fail-with-body -sS -X "$method" "$url" \
                 -H "X-Cassandra-Token: ${ASTRA_TOKEN}" \
-                -H "Content-Type: application/json" \
-                --data '{
-                  "name": "created_at",
-                  "typeDefinition": "timestamp",
-                  "static": false
-                }'
-              ;;
+                -H "Content-Type: ${content_type}" \
+                -w "\nHTTP_STATUS=%{http_code}\n"
+            else
+              curl --fail-with-body -sS -X "$method" "$url" \
+                -H "X-Cassandra-Token: ${ASTRA_TOKEN}" \
+                -w "\nHTTP_STATUS=%{http_code}\n"
+            fi
+          }
 
-            alter_drop)
-              echo "Dropping column created_at..."
-              curl -sS -X DELETE "${SCHEMA_API}/keyspaces/${KEYSPACE}/tables/${TABLE}/columns/created_at" \
-                -H "X-Cassandra-Token: ${ASTRA_TOKEN}"
-              ;;
+          # Wrapper to allow "already exists" / "doesn't exist" to not fail the run
+          request_allow_conflict () {
+            local method="$1"
+            local url="$2"
+            local content_type="${3:-}"
+            local data="${4:-}"
 
-            drop)
-              echo "Dropping table..."
-              curl -sS -X DELETE "${SCHEMA_API}/keyspaces/${KEYSPACE}/tables/${TABLE}" \
-                -H "X-Cassandra-Token: ${ASTRA_TOKEN}"
-              ;;
+            set +e
+            out="$(request "$method" "$url" "$content_type" "$data" 2>&1)"
+            code=$?
+            set -e
 
-            *)
-              echo "Unknown action: ${ACTION}"
-              echo "Use one of: create | alter_add | alter_drop | drop"
-              exit 2
-              ;;
-          esac
+            # If request succeeded -> print output
+            if [ $code -eq 0 ]; then
+              echo "$out"
+              return 0
+            fi
 
-          echo
+            # If it failed, still print output for visibility
+            echo "$out"
+
+            # Allow some expected cases (table exists / column exists / column missing)
+            if echo "$out" | grep -Eq 'HTTP_STATUS=409|HTTP_STATUS=404'; then
+              echo "Continuing (non-fatal for this demo)."
+              return 0
+            fi
+
+            # Otherwise fail
+            echo "Fatal error."
+            return 1
+          }
+
+          echo "1) Create table (idempotent via ifNotExists=true)"
+          request_allow_conflict POST "${SCHEMA_API}/keyspaces/${KEYSPACE}/tables" "application/json" '{
+            "name": "'"${TABLE}"'",
+            "ifNotExists": true,
+            "columnDefinitions": [
+              { "name": "emailaddress", "typeDefinition": "text", "static": false },
+              { "name": "age",         "typeDefinition": "int",  "static": false }
+            ],
+            "primaryKey": {
+              "partitionKey": ["emailaddress"],
+              "clusteringKey": ["age"]
+            }
+          }'
+
+          echo "2) Alter table - add column created_at"
+          request_allow_conflict POST "${SCHEMA_API}/keyspaces/${KEYSPACE}/tables/${TABLE}/columns" "application/json" '{
+            "name": "created_at",
+            "typeDefinition": "timestamp",
+            "static": false
+          }'
+
+          echo "3) Alter table - drop column created_at"
+          request_allow_conflict DELETE "${SCHEMA_API}/keyspaces/${KEYSPACE}/tables/${TABLE}/columns/created_at"
+
           echo "Done."
