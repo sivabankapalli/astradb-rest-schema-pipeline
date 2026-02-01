@@ -1,135 +1,29 @@
-﻿name: Astra Schema - Create then Alter (curl)
+﻿name: AstraDB Schema Management (DDL via curl)
 
 on:
-  workflow_dispatch:
-    inputs:
-      table:
-        description: "Target table name"
-        required: true
-        default: "users1"
+  workflow_dispatch: {}
   push:
     branches: [ "main" ]
+    paths:
+      - "schema/**"
+      - "scripts/**"
+      - ".github/workflows/astradb-schema.yml"
 
 jobs:
   schema:
     runs-on: ubuntu-latest
 
     env:
-      ASTRA_DB_ID: ${{ secrets.ASTRA_DB_ID }}
-      ASTRA_REGION: ${{ secrets.ASTRA_REGION }}
-      ASTRA_TOKEN: ${{ secrets.ASTRA_TOKEN }}
-      KEYSPACE: ${{ secrets.ASTRA_KEYSPACE }}
+      ASTRA_DB_ID:    ${{ secrets.ASTRA_DB_ID }}
+      ASTRA_REGION:   ${{ secrets.ASTRA_REGION }}
+      ASTRA_TOKEN:    ${{ secrets.ASTRA_TOKEN }}
+      ASTRA_KEYSPACE: ${{ secrets.ASTRA_KEYSPACE }}
 
     steps:
-      - name: Validate required secrets
+      - uses: actions/checkout@v4
+
+      - name: Apply schema scripts (DDL only)
         shell: bash
         run: |
-          set -euo pipefail
-          for v in ASTRA_DB_ID ASTRA_REGION ASTRA_TOKEN KEYSPACE; do
-            if [ -z "${!v:-}" ]; then
-              echo "Missing env var: $v (set it as a GitHub secret)"; exit 1
-            fi
-          done
-
-      - name: Create table + alter add + alter drop (sequence)
-        shell: bash
-        env:
-          TABLE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.table || 'users1' }}
-        run: |
-          set -euo pipefail
-
-          BASE_URL="https://${ASTRA_DB_ID}-${ASTRA_REGION}.apps.astra.datastax.com"
-          SCHEMA_API="${BASE_URL}/api/rest/v2/schemas"
-
-          echo "Base URL: ${BASE_URL}"
-          echo "Schema API: ${SCHEMA_API}"
-          echo "Keyspace: ${KEYSPACE}"
-          echo "Table: ${TABLE}"
-
-          # Helper that:
-          # - prints response body
-          # - fails the step for non-2xx (but we can optionally ignore specific expected errors)
-          request () {
-            local method="$1"
-            local url="$2"
-            local content_type="${3:-}"
-            local data="${4:-}"
-
-            echo "----"
-            echo "${method} ${url}"
-
-            if [ -n "$content_type" ] && [ -n "$data" ]; then
-              curl --fail-with-body -sS -X "$method" "$url" \
-                -H "X-Cassandra-Token: ${ASTRA_TOKEN}" \
-                -H "Content-Type: ${content_type}" \
-                --data "$data" \
-                -w "\nHTTP_STATUS=%{http_code}\n"
-            elif [ -n "$content_type" ]; then
-              curl --fail-with-body -sS -X "$method" "$url" \
-                -H "X-Cassandra-Token: ${ASTRA_TOKEN}" \
-                -H "Content-Type: ${content_type}" \
-                -w "\nHTTP_STATUS=%{http_code}\n"
-            else
-              curl --fail-with-body -sS -X "$method" "$url" \
-                -H "X-Cassandra-Token: ${ASTRA_TOKEN}" \
-                -w "\nHTTP_STATUS=%{http_code}\n"
-            fi
-          }
-
-          # Wrapper to allow "already exists" / "doesn't exist" to not fail the run
-          request_allow_conflict () {
-            local method="$1"
-            local url="$2"
-            local content_type="${3:-}"
-            local data="${4:-}"
-
-            set +e
-            out="$(request "$method" "$url" "$content_type" "$data" 2>&1)"
-            code=$?
-            set -e
-
-            # If request succeeded -> print output
-            if [ $code -eq 0 ]; then
-              echo "$out"
-              return 0
-            fi
-
-            # If it failed, still print output for visibility
-            echo "$out"
-
-            # Allow some expected cases (table exists / column exists / column missing)
-            if echo "$out" | grep -Eq 'HTTP_STATUS=409|HTTP_STATUS=404'; then
-              echo "Continuing (non-fatal for this demo)."
-              return 0
-            fi
-
-            # Otherwise fail
-            echo "Fatal error."
-            return 1
-          }
-
-          echo "1) Create table (idempotent via ifNotExists=true)"
-          request_allow_conflict POST "${SCHEMA_API}/keyspaces/${KEYSPACE}/tables" "application/json" '{
-            "name": "'"${TABLE}"'",
-            "ifNotExists": true,
-            "columnDefinitions": [
-              { "name": "emailaddress", "typeDefinition": "text", "static": false },
-              { "name": "age",         "typeDefinition": "int",  "static": false }
-            ],
-            "primaryKey": {
-              "partitionKey": ["emailaddress"],
-              "clusteringKey": ["age"]
-            }
-          }'
-
-          echo "2) Alter table - add column created_at"
-          request_allow_conflict POST "${SCHEMA_API}/keyspaces/${KEYSPACE}/tables/${TABLE}/columns" "application/json" '{
-            "name": "created_at",
-            "typeDefinition": "timestamp",
-            "static": false
-          }'
-
-          echo "3) Alter table - drop column created_at"
-          request_allow_conflict DELETE "${SCHEMA_API}/keyspaces/${KEYSPACE}/tables/${TABLE}/columns/created_at"
-
-          echo "Done."
+          chmod +x scripts/apply-schema.sh
+          scripts/apply-schema.sh
