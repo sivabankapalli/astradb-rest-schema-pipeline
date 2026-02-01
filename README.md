@@ -151,6 +151,10 @@ MIT License
 
 ------------------------------------------------------------------------
 
+## References
+https://murukeshm.github.io/cassandra/trunk/cql/changes.html?utm_source=chatgpt.com
+https://dba.stackexchange.com/questions/314933/how-do-we-handle-alter-table-column-type-in-cassandra-in-actual-scenarios?utm_source=chatgpt.com
+
 ## Contributions
 
 Pull requests and improvements are welcome. Please follow the versioned schema file naming convention.
