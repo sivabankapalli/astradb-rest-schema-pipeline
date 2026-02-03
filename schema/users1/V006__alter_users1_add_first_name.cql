@@ -1,1 +1,0 @@
-ALTER TABLE users1 ADD first_name text;
