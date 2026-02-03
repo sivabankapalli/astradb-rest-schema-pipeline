@@ -27,3 +27,17 @@ jobs:
         run: |
           chmod +x scripts/apply-schema.sh
           scripts/apply-schema.sh
+
+      - name: Generate schema snapshot (latest)
+        shell: bash
+        run: |
+          chmod +x scripts/generate-schema-snapshot.sh
+          scripts/generate-schema-snapshot.sh snapshots/latest
+          echo "Snapshot files:"
+          ls -la snapshots/latest || true
+
+      - name: Upload schema snapshot artifact (latest)
+        uses: actions/upload-artifact@v4
+        with:
+          name: schema-snapshot-latest
+          path: snapshots/latest

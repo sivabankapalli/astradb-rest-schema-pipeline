@@ -6,17 +6,10 @@ trigger:
     include:
       - schema/*
       - scripts/*
-      - azure-pipelines.yml
+      - scripts/azure-pipelines.yml
 
 pool:
   vmImage: ubuntu-latest
-
-variables:
-  # These should be set in Azure DevOps as secret variables (recommended)
-  # ASTRA_DB_ID
-  # ASTRA_REGION
-  # ASTRA_TOKEN
-  # ASTRA_KEYSPACE
 
 steps:
   - checkout: self
@@ -33,11 +26,32 @@ steps:
         fi
       done
 
+      echo "Running schema apply..."
       chmod +x scripts/apply-schema.sh
       scripts/apply-schema.sh
-    displayName: "Apply AstraDB schema scripts (DDL only)"
+    displayName: "Apply versioned schema scripts (DDL only)"
     env:
       ASTRA_DB_ID: $(ASTRA_DB_ID)
       ASTRA_REGION: $(ASTRA_REGION)
       ASTRA_TOKEN: $(ASTRA_TOKEN)
       ASTRA_KEYSPACE: $(ASTRA_KEYSPACE)
+
+  - bash: |
+      set -euo pipefail
+
+      echo "Generating latest schema snapshot..."
+      chmod +x scripts/generate-schema-snapshot.sh
+      scripts/generate-schema-snapshot.sh snapshots/latest
+
+      echo "Snapshot files:"
+      ls -la snapshots/latest || true
+    displayName: "Generate schema snapshot (latest)"
+    env:
+      ASTRA_DB_ID: $(ASTRA_DB_ID)
+      ASTRA_REGION: $(ASTRA_REGION)
+      ASTRA_TOKEN: $(ASTRA_TOKEN)
+      ASTRA_KEYSPACE: $(ASTRA_KEYSPACE)
+
+  - publish: snapshots/latest
+    artifact: schema-snapshot-latest
+    displayName: "Publish schema snapshot artifact (latest)"
