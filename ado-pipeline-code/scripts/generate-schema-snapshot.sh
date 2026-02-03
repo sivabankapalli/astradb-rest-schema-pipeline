@@ -13,8 +13,7 @@ OUT_DIR="${1:-snapshots/latest}"
 mkdir -p "${OUT_DIR}"
 
 echo "=========================================="
-echo "Generate Schema Snapshot (latest)"
-echo "Base URL : ${BASE_URL}"
+echo "Generate Schema Snapshot (latest, repo-owned tables only)"
 echo "Keyspace : ${ASTRA_KEYSPACE}"
 echo "Out Dir  : ${OUT_DIR}"
 echo "=========================================="
@@ -27,19 +26,23 @@ cql_exec () {
     --data "${cql}"
 }
 
-# Get all table names in the keyspace (exclude schema_versions)
-tables_json="$(cql_exec "SELECT table_name FROM system_schema.tables WHERE keyspace_name='${ASTRA_KEYSPACE}';")"
-mapfile -t TABLES < <(echo "$tables_json" | jq -r '.data[].table_name' | sort | grep -v '^schema_versions$' || true)
-
-if [ ${#TABLES[@]} -eq 0 ]; then
-  echo "No tables found in keyspace ${ASTRA_KEYSPACE} (or only schema_versions). Nothing to snapshot."
+# Determine tables from repo folder names under ./schema
+if [ ! -d "schema" ]; then
+  echo "No ./schema directory found. Nothing to snapshot."
   exit 0
 fi
 
-echo "Tables to snapshot:"
+mapfile -t TABLES < <(find schema -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+
+if [ ${#TABLES[@]} -eq 0 ]; then
+  echo "No table folders found under ./schema. Expected schema/<tableName>/..."
+  exit 0
+fi
+
+echo "Repo-owned tables to snapshot:"
 printf ' - %s\n' "${TABLES[@]}"
 
-# Optional: fetch indexes once (we'll filter per table)
+# Fetch indexes once (filter per table)
 indexes_json="$(cql_exec "SELECT table_name, index_name, kind, options FROM system_schema.indexes WHERE keyspace_name='${ASTRA_KEYSPACE}';")"
 
 for table in "${TABLES[@]}"; do
@@ -48,12 +51,22 @@ for table in "${TABLES[@]}"; do
   echo "Snapshot table: ${table}"
   echo "Output file   : ${out_file}"
 
+  # Confirm table exists in the environment; if not, create a readable warning snapshot file
+  exists_json="$(cql_exec "SELECT table_name FROM system_schema.tables WHERE keyspace_name='${ASTRA_KEYSPACE}' AND table_name='${table}';")"
+  if ! echo "$exists_json" | jq -e '.data | length > 0' >/dev/null 2>&1; then
+    {
+      echo "-- Auto-generated schema snapshot (latest)"
+      echo "-- Keyspace: ${ASTRA_KEYSPACE}"
+      echo "-- Table: ${table}"
+      echo "-- WARNING: Table does not exist in this environment."
+      echo "-- This repo contains schema scripts for this table, but it has not been applied yet."
+    } > "${out_file}"
+    echo "WARN: ${table} does not exist in ${ASTRA_KEYSPACE}. Wrote warning snapshot."
+    continue
+  fi
+
   cols_json="$(cql_exec "SELECT column_name, type, kind, position FROM system_schema.columns WHERE keyspace_name='${ASTRA_KEYSPACE}' AND table_name='${table}';")"
 
-  # Build ordered column lines:
-  # - partition_key + clustering first (by position)
-  # - then regular/static columns (alphabetical)
-  # This provides a stable, readable CREATE TABLE output.
   column_lines="$(echo "$cols_json" | jq -r '
     .data
     | (map(select(.kind=="partition_key")) | sort_by(.position))
@@ -64,7 +77,6 @@ for table in "${TABLES[@]}"; do
     | join(",\n")
   ')"
 
-  # Extract partition/clustering key lists
   partition_keys="$(echo "$cols_json" | jq -r '
     .data | map(select(.kind=="partition_key")) | sort_by(.position) | map(.column_name) | join(",")
   ')"
@@ -73,22 +85,22 @@ for table in "${TABLES[@]}"; do
   ')"
 
   if [ -z "${partition_keys}" ]; then
-    echo "WARN: No partition key found for ${table}. Skipping snapshot (unexpected for a table)."
+    {
+      echo "-- Auto-generated schema snapshot (latest)"
+      echo "-- Keyspace: ${ASTRA_KEYSPACE}"
+      echo "-- Table: ${table}"
+      echo "-- ERROR: Could not determine partition key from system_schema.columns."
+    } > "${out_file}"
+    echo "ERROR: No partition key found for ${table}. Wrote error snapshot."
     continue
   fi
 
-  # Build PRIMARY KEY clause
-  # - If there are clustering keys: PRIMARY KEY ((pk1,pk2), ck1, ck2)
-  # - Else: PRIMARY KEY ((pk1,pk2))
   if [ -n "${clustering_keys}" ]; then
     pk_clause="PRIMARY KEY ((${partition_keys}), ${clustering_keys})"
   else
     pk_clause="PRIMARY KEY ((${partition_keys}))"
   fi
 
-  # Build index statements (best-effort)
-  # Note: system_schema.indexes.options typically contains the target column expression.
-  # We'll print a readable comment + a best-effort CREATE INDEX statement.
   index_block="$(echo "$indexes_json" | jq -r --arg t "$table" '
     .data
     | map(select(.table_name==$t))
